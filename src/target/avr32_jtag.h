@@ -8,6 +8,7 @@
 #define OPENOCD_TARGET_AVR32_JTAG_H
 
 #define	AVR32NUMCOREREGS	17
+#define AVR32_IR_LEN		5
 
 /* tap instructions */
 #define AVR32_INST_IDCODE		0x01
@@ -74,6 +75,9 @@ struct avr32_jtag {
 	uint32_t dpc; /* Debug PC value */
 };
 
+int avr32_jtag_set_instr(struct avr32_jtag *jtag_info, uint32_t* ir_in, uint32_t new_instr);
+int avr32_jtag_send_dat(struct avr32_jtag *jtag_info, uint64_t *dr_in, uint64_t dr_out, int len);
+
 int avr32_jtag_nexus_read(struct avr32_jtag *jtag_info,
 		uint32_t addr, uint32_t *value);
 int avr32_jtag_nexus_write(struct avr32_jtag *jtag_info,
@@ -88,5 +92,7 @@ int avr32_ocd_setbits(struct avr32_jtag *jtag, int reg, uint32_t bits);
 int avr32_ocd_clearbits(struct avr32_jtag *jtag, int reg, uint32_t bits);
 
 int avr32_jtag_exec(struct avr32_jtag *jtag_info, uint32_t inst);
+
+int avr32_jtag_queue_instruction(struct avr32_jtag *jtag_info, uint8_t* ir_in, uint8_t new_instr);
 
 #endif /* OPENOCD_TARGET_AVR32_JTAG_H */

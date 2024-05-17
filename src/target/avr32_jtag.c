@@ -12,7 +12,7 @@
 #include "jtag/jtag.h"
 #include "avr32_jtag.h"
 
-static int avr32_jtag_set_instr(struct avr32_jtag *jtag_info, int new_instr)
+int avr32_jtag_set_instr(struct avr32_jtag *jtag_info, uint32_t* ir_in, uint32_t new_instr)
 {
 	struct jtag_tap *tap;
 	int busy = 0;
@@ -37,6 +37,7 @@ static int avr32_jtag_set_instr(struct avr32_jtag *jtag_info, int new_instr)
 				LOG_ERROR("%s: setting address failed", __func__);
 				return ERROR_FAIL;
 			}
+			if (ir_in) *ir_in = buf_get_u32(ret, 0, tap->ir_length);
 			busy = buf_get_u32(ret, 2, 1);
 		} while (busy); /* check for busy bit */
 	}
@@ -160,7 +161,7 @@ static int avr32_jtag_nexus_write_data(struct avr32_jtag *jtag_info,
 int avr32_jtag_nexus_read(struct avr32_jtag *jtag_info,
 		uint32_t addr, uint32_t *value)
 {
-	avr32_jtag_set_instr(jtag_info, AVR32_INST_NEXUS_ACCESS);
+	avr32_jtag_set_instr(jtag_info, NULL, AVR32_INST_NEXUS_ACCESS);
 	avr32_jtag_nexus_set_address(jtag_info, addr, MODE_READ);
 	return avr32_jtag_nexus_read_data(jtag_info, value);
 }
@@ -168,7 +169,7 @@ int avr32_jtag_nexus_read(struct avr32_jtag *jtag_info,
 int avr32_jtag_nexus_write(struct avr32_jtag *jtag_info,
 		uint32_t addr, uint32_t value)
 {
-	avr32_jtag_set_instr(jtag_info, AVR32_INST_NEXUS_ACCESS);
+	avr32_jtag_set_instr(jtag_info, NULL, AVR32_INST_NEXUS_ACCESS);
 	avr32_jtag_nexus_set_address(jtag_info, addr, MODE_WRITE);
 	return avr32_jtag_nexus_write_data(jtag_info, value);
 }
@@ -290,7 +291,7 @@ static int avr32_jtag_mwa_write_data(struct avr32_jtag *jtag_info,
 int avr32_jtag_mwa_read(struct avr32_jtag *jtag_info, int slave,
 		uint32_t addr, uint32_t *value)
 {
-	avr32_jtag_set_instr(jtag_info, AVR32_INST_MW_ACCESS);
+	avr32_jtag_set_instr(jtag_info, NULL, AVR32_INST_MW_ACCESS);
 	avr32_jtag_mwa_set_address(jtag_info, slave, addr, MODE_READ);
 	avr32_jtag_mwa_read_data(jtag_info, value);
 
@@ -300,7 +301,7 @@ int avr32_jtag_mwa_read(struct avr32_jtag *jtag_info, int slave,
 int avr32_jtag_mwa_write(struct avr32_jtag *jtag_info, int slave,
 		uint32_t addr, uint32_t value)
 {
-	avr32_jtag_set_instr(jtag_info, AVR32_INST_MW_ACCESS);
+	avr32_jtag_set_instr(jtag_info, NULL, AVR32_INST_MW_ACCESS);
 	avr32_jtag_mwa_set_address(jtag_info, slave, addr, MODE_WRITE);
 	avr32_jtag_mwa_write_data(jtag_info, value);
 
@@ -355,6 +356,50 @@ int avr32_ocd_clearbits(struct avr32_jtag *jtag, int reg, uint32_t bits)
 	res = avr32_jtag_nexus_write(jtag, reg, value);
 	if (res)
 		return res;
+
+	return ERROR_OK;
+}
+
+int avr32_jtag_send_dat(struct avr32_jtag *jtag_info, uint64_t *dr_in, uint64_t dr_out, int len)
+{
+	if (!jtag_info->tap)
+	{
+		LOG_ERROR("invalid tap");
+		return ERROR_FAIL;
+	}
+	if (len > 39) {
+		LOG_ERROR("dr_len overflow, maximum is 39");
+		return ERROR_FAIL;
+	}
+
+	uint8_t out[sizeof(uint64_t)/sizeof(uint8_t)] = { 0 };
+	uint8_t in[sizeof(uint64_t)/sizeof(uint8_t)];
+	buf_set_u64(out, 0, len, dr_out);
+	jtag_add_plain_dr_scan(len, out, in, TAP_IDLE);
+	if (jtag_execute_queue() != ERROR_OK)
+	{
+		LOG_ERROR("%s: sending data failed", __func__);
+		return ERROR_FAIL;
+	}
+	if (dr_in) dr_in = buf_get_u64(in, 0, len);
+
+	return ERROR_OK;
+}
+
+int avr32_jtag_queue_instruction(struct avr32_jtag *jtag_info, uint8_t* ir_in, uint8_t new_instr)
+{
+	struct jtag_tap *tap;
+
+	tap = jtag_info->tap;
+	if (!tap)
+		return ERROR_FAIL;
+	if (tap->ir_length > 8)
+	{
+		LOG_ERROR("invalid ir length");
+		return ERROR_FAIL;
+	}
+
+	jtag_add_plain_ir_scan(tap->ir_length, &new_instr, ir_in, TAP_IDLE);
 
 	return ERROR_OK;
 }

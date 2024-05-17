@@ -1,0 +1,16 @@
+{
+    "files.associations": {
+        "avr32_ap7k.h": "c",
+        "avrt.h": "c",
+        "target.h": "c",
+        "target_type.h": "c",
+        "imp.h": "c",
+        "core.h": "c",
+        "common.h": "c",
+        "log.h": "c",
+        "command.h": "c",
+        "jim-nvp.h": "c",
+        "config.h": "c",
+        "jtag.h": "c"
+    }
+}
