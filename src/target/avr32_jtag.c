@@ -12,7 +12,7 @@
 #include "jtag/jtag.h"
 #include "avr32_jtag.h"
 
-int avr32_jtag_set_instr(struct avr32_jtag *jtag_info, uint32_t* ir_in, uint32_t new_instr)
+int avr32_jtag_set_instr(struct avr32_jtag *jtag_info, uint8_t* ir_in, uint32_t new_instr)
 {
 	struct jtag_tap *tap;
 	int busy = 0;
@@ -37,7 +37,7 @@ int avr32_jtag_set_instr(struct avr32_jtag *jtag_info, uint32_t* ir_in, uint32_t
 				LOG_ERROR("%s: setting address failed", __func__);
 				return ERROR_FAIL;
 			}
-			if (ir_in) *ir_in = buf_get_u32(ret, 0, tap->ir_length);
+			if (ir_in) *ir_in = (uint8_t)buf_get_u32(ret, 0, tap->ir_length);
 			busy = buf_get_u32(ret, 2, 1);
 		} while (busy); /* check for busy bit */
 	}
@@ -381,7 +381,7 @@ int avr32_jtag_send_dat(struct avr32_jtag *jtag_info, uint64_t *dr_in, uint64_t 
 		LOG_ERROR("%s: sending data failed", __func__);
 		return ERROR_FAIL;
 	}
-	if (dr_in) dr_in = buf_get_u64(in, 0, len);
+	if (dr_in) *dr_in = buf_get_u64(in, 0, len);
 
 	return ERROR_OK;
 }

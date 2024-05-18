@@ -75,7 +75,7 @@ struct avr32_jtag {
 	uint32_t dpc; /* Debug PC value */
 };
 
-int avr32_jtag_set_instr(struct avr32_jtag *jtag_info, uint32_t* ir_in, uint32_t new_instr);
+int avr32_jtag_set_instr(struct avr32_jtag *jtag_info, uint8_t* ir_in, uint32_t new_instr);
 int avr32_jtag_send_dat(struct avr32_jtag *jtag_info, uint64_t *dr_in, uint64_t dr_out, int len);
 
 int avr32_jtag_nexus_read(struct avr32_jtag *jtag_info,

@@ -11,9 +11,9 @@
 #endif
 
 #include "imp.h"
-#include <target/avr32_ap7k.h>
 #include <target/avr32_jtag.h>
 #include <target/avr32_mem.h>
+#include <target/avr32_ap7k.h>
 #include <inttypes.h>
 
 #define ERR_CHECK(x) { int __err; if ((__err = (x)) != ERROR_OK) { return __err; } }
@@ -120,29 +120,28 @@ static const struct avr32uc_type avr32uc_chips_info[] = {
 /* avr program functions */
 static int AVR32UC_JTAG_reset(struct avr32_ap7k_common *avr, uint32_t reset)
 {
-	avr32_jtag_set_instr(&(avr->jtag), NULL, AVR32UC_JTAG_INS_AVR_RESET);
-	avr32_jtag_send_dat(avr->jtag.tap, NULL, reset, AVR32UC_JTAG_REG_RESET_LEN);
-	ERR_CHECK(mcu_execute_queue());
+	ERR_CHECK(avr32_jtag_queue_instruction(&(avr->jtag), NULL, AVR32UC_JTAG_INS_AVR_RESET));
+	ERR_CHECK(avr32_jtag_send_dat(&(avr->jtag), NULL, reset, AVR32UC_JTAG_REG_RESET_LEN));
 
 	return ERROR_OK;
 }
 
 static int AVR32UC_JTAG_read_jtagid(struct avr32_ap7k_common *avr, uint32_t *id)
 {
-	avr32_jtag_set_instr(avr->jtag.tap, NULL, AVR32UC_JTAG_INS_IDCODE);
-	avr32_jtag_send_dat(avr->jtag.tap, id, 0, AVR32UC_JTAG_REG_JTAGID_LEN);
-	ERR_CHECK(mcu_execute_queue());
+	ERR_CHECK(avr32_jtag_queue_instruction(&(avr->jtag), NULL, AVR32UC_JTAG_INS_IDCODE));
+	uint64_t ret;
+	ERR_CHECK(avr32_jtag_send_dat(&(avr->jtag), &ret, 0, AVR32UC_JTAG_REG_JTAGID_LEN));
+	*id = (uint32_t)(ret);
 
 	return ERROR_OK;
 }
 
 static int avr32uc_jtagprg_chiperase(struct avr32_ap7k_common *avr)
 {
-	uint32_t poll_value;
+	uint8_t poll_value;
 
-	avr32_jtag_queue_instruction(avr->jtag.tap, &poll_value, AVR32UC_JTAG_INS_CHIP_ERASE);
-	avr32_jtag_send_dat(avr->jtag.tap, NULL, 0, AVR32UC_JTAG_REG_BYPASS_LEN);
-	ERR_CHECK(mcu_execute_queue());
+	ERR_CHECK(avr32_jtag_queue_instruction(&(avr->jtag), &poll_value, AVR32UC_JTAG_INS_CHIP_ERASE));
+	ERR_CHECK(avr32_jtag_send_dat(&(avr->jtag), NULL, 0, AVR32UC_JTAG_REG_BYPASS_LEN));
 
 	return (poll_value & (1 << 2)) ? ERROR_FLASH_BUSY : ERROR_OK;
 }
@@ -309,7 +308,7 @@ static int avr32uc_read_flash_controller_reg(struct flash_bank *bank, uint8_t ad
 	ERR_CHECK(avr32_jtag_set_instr(&(avr->jtag), &ir_in, AVR32UC_JTAG_INS_MEMORY_WORD_ACCESS));
 	if (ir_in & 0b11100)
 	{
-		LOG_ERROR("%s: failed to acquire memory access (%" PRIX8 ")", ir_in);
+		LOG_ERROR("%s: failed to acquire memory access (%" PRIX8 ")", __func__, ir_in);
 		if (ir_in & 0b10000) return ERROR_FLASH_PROTECTED;
 		if (ir_in & 0b01000) return ERROR_TARGET_FAILURE;
 		if (ir_in & 0b00100) return ERROR_FLASH_BUSY;
@@ -321,9 +320,9 @@ static int avr32uc_read_flash_controller_reg(struct flash_bank *bank, uint8_t ad
 	if (dr_in & 0b10) return ERROR_TARGET_FAILURE;
 	//Data read phase
 	ERR_CHECK(avr32_jtag_send_dat(&(avr->jtag), &dr_in, 0, AVR32UC_JTAG_REG_MEMORY_SIZED_ACCESS_LEN));
-	if (dr_in & (1 << (AVR32UC_JTAG_REG_MEMORY_SIZED_ACCESS_LEN - 3))) return ERROR_FLASH_BUSY;
-	if (dr_in & (1 << (AVR32UC_JTAG_REG_MEMORY_SIZED_ACCESS_LEN - 2))) return ERROR_TARGET_FAILURE;
-	if (data) *data = (uint32_t)(dr_in & 0xFFFFFFFF);
+	if (dr_in & (1UL << (AVR32UC_JTAG_REG_MEMORY_SIZED_ACCESS_LEN - 3))) return ERROR_FLASH_BUSY;
+	if (dr_in & (1UL << (AVR32UC_JTAG_REG_MEMORY_SIZED_ACCESS_LEN - 2))) return ERROR_TARGET_FAILURE;
+	if (data) *data = (uint32_t)(dr_in & 0xFFFFFFFFUL);
 
 	return ERROR_OK;
 }
@@ -338,7 +337,7 @@ static int avr32uc_write_flash_controller_reg(struct flash_bank *bank, uint8_t a
 		return ERROR_FAIL;
 	if (ir_in & 0b11100)
 	{
-		LOG_ERROR("%s: failed to acquire memory access (%" PRIX8 ")", ir_in);
+		LOG_ERROR("%s: failed to acquire memory access (%" PRIX8 ")", __func__, ir_in);
 		if (ir_in & 0b10000) return ERROR_FLASH_PROTECTED;
 		if (ir_in & 0b01000) return ERROR_TARGET_FAILURE;
 		if (ir_in & 0b00100) return ERROR_FLASH_BUSY;
@@ -374,6 +373,8 @@ int avr32uc_wait_flash_ready(struct flash_bank *bank)
 			return 0;
 		// FLASH ready for next operation
 	}
+
+	return ERROR_OK;
 }
 
 int avr32uc_send_flash_command(struct flash_bank *bank, uint32_t cmd)
@@ -385,7 +386,6 @@ int avr32uc_flash_clear_page_buf(struct flash_bank *bank)
 {
 	uint32_t command = WRITE_PROTECT_KEY | CMD_CLEAR_PAGE_BUFFER;
 	if (avr32uc_wait_flash_ready(bank) != 0) return ERROR_FAIL;
-	int err;
 	ERR_CHECK(avr32uc_send_flash_command(bank, command));
 	avr32uc_wait_flash_ready(bank);
 
@@ -459,7 +459,7 @@ int avr32uc_flash_unlock_region(struct flash_bank *bank, uint32_t offset, uint32
 
 int avr32uc_flash_unlock(struct flash_bank *bank)
 {
-	int DeviceSize;
+	uint32_t DeviceSize;
 	ERR_CHECK(avr32uc_flash_get_size(bank, &DeviceSize));
 	ERR_CHECK(avr32uc_flash_unlock_region(bank, 0, DeviceSize));
 
@@ -517,7 +517,7 @@ int avr32uc_flash_erase_region(struct flash_bank *bank, uint32_t offset, uint32_
 	return ERROR_OK;
 }
 
-int avr32uc_flash_program_userpage(struct flash_bank *bank, uint32_t offset, uint8_t* DataBuffer, uint32_t len)
+int avr32uc_flash_program_userpage(struct flash_bank *bank, uint32_t offset, const uint8_t* DataBuffer, uint32_t len)
 {
 	struct avr32_ap7k_common* avr = bank->target->arch_info;
 	if ((offset + len) > BYTES_PER_PAGE)
@@ -565,10 +565,13 @@ static int avr32uc_flash_send_write_page(struct flash_bank *bank, uint32_t page_
 	return ERROR_OK;
 }
 
-int avr32uc_flash_program(struct flash_bank *bank, uint32_t offset, uint8_t* DataBuffer, uint32_t len)
+int avr32uc_flash_program(struct flash_bank *bank, const uint8_t* DataBuffer, uint32_t offset, uint32_t len)
 {
 	if (offset >= USER_PAGE_OFFSET && (offset + len) <= USER_PAGE_OFFSET + BYTES_PER_PAGE)
 		return avr32uc_flash_program_userpage(bank, offset - USER_PAGE_OFFSET, DataBuffer, len);
+
+	struct avr32_ap7k_common* avr = bank->target->arch_info;
+	struct avr32_jtag* jtag = &(avr->jtag);
 	
 	uint32_t mDeviceSize;
 	ERR_CHECK(avr32uc_flash_get_size(bank, &mDeviceSize));
@@ -584,7 +587,7 @@ int avr32uc_flash_program(struct flash_bank *bank, uint32_t offset, uint8_t* Dat
 	if (start_part_len != 0)
 	{
 		ERR_CHECK(avr32uc_flash_clear_page_buf(bank));
-		ERR_CHECK(avr32_jtag_read_memory8(bank, 
+		ERR_CHECK(avr32_jtag_read_memory8(jtag, 
 			flash_offset,
 			start_part_len,
 			bufferPacket));
@@ -592,7 +595,7 @@ int avr32uc_flash_program(struct flash_bank *bank, uint32_t offset, uint8_t* Dat
 			DataBuffer,
 			BYTES_PER_PAGE - start_part_len);
 
-		ERR_CHECK(avr32_jtag_write_memory8(bank,
+		ERR_CHECK(avr32_jtag_write_memory8(jtag,
 			flash_offset,
 			BYTES_PER_PAGE,
 			bufferPacket));
@@ -607,7 +610,7 @@ int avr32uc_flash_program(struct flash_bank *bank, uint32_t offset, uint8_t* Dat
 	while (flash_offset < whole_page_limit)
 	{
 		ERR_CHECK(avr32uc_flash_clear_page_buf(bank));
-		ERR_CHECK(avr32_jtag_write_memory8(bank,
+		ERR_CHECK(avr32_jtag_write_memory8(jtag,
 			flash_offset,
 			BYTES_PER_PAGE,
 			DataBuffer + buffer_offset));
@@ -625,12 +628,12 @@ int avr32uc_flash_program(struct flash_bank *bank, uint32_t offset, uint8_t* Dat
 		memcpy(bufferPacket,
 			DataBuffer + buffer_offset,
 			end_part_len);
-		ERR_CHECK(avr32_jtag_read_memory8(bank, 
+		ERR_CHECK(avr32_jtag_read_memory8(jtag, 
 			flash_offset + end_part_len,
 			BYTES_PER_PAGE - end_part_len,
 			bufferPacket + end_part_len));
 
-		ERR_CHECK(avr32_jtag_write_memory8(bank,
+		ERR_CHECK(avr32_jtag_write_memory8(jtag,
 			flash_offset,
 			BYTES_PER_PAGE,
 			bufferPacket));
@@ -648,7 +651,7 @@ int avr32uc_fuse_get_bit(struct flash_bank *bank, int Index, bool* value)
 	uint32_t fuses_high, fuses_low;
 	ERR_CHECK(avr32uc_read_flash_controller_reg(bank, FGPFRHI, &fuses_high));
 	ERR_CHECK(avr32uc_read_flash_controller_reg(bank, FGPFRLO, &fuses_low));
-	uint64_t fuses = (fuses_high << 32) | fuses_low;
+	uint64_t fuses = ((uint64_t)fuses_high << 32) | (uint64_t)fuses_low;
 	*value = fuses & (1 << Index);
 
 	return ERROR_OK;
@@ -657,7 +660,7 @@ int avr32uc_fuse_get_bit(struct flash_bank *bank, int Index, bool* value)
 int avr32uc_fuse_set_bit(struct flash_bank *bank, int index, bool Value)
 {
 	if (index > 63 || index < 0)
-		return;
+		return ERROR_FLASH_DST_OUT_OF_BANK;
 	uint32_t command = WRITE_PROTECT_KEY | (index << FCMD_PAGEN_offset);
 	if (Value) // erase bit
 		command |= CMD_ERASE_GP_FUSE_BIT;
