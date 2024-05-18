@@ -4,7 +4,7 @@
  *   Copyright (C) 2024 Paul Kutukov                                       *
  ***************************************************************************/
 
-//TODO: turn pseudo-code from 32070A–AVR32–11/07 into actual C code
+//turn pseudo-code from 32070A–AVR32–11/07 into actual C code
 
 #ifdef HAVE_CONFIG_H
 #include "config.h"
@@ -13,6 +13,7 @@
 #include "imp.h"
 #include <target/avr32_ap7k.h>
 #include <target/avr32_jtag.h>
+#include <target/avr32_mem.h>
 #include <inttypes.h>
 
 #define ERR_CHECK(x) { int __err; if ((__err = (x)) != ERROR_OK) { return __err; } }
@@ -45,6 +46,7 @@
 #define AVR32UC_JTAG_REG_MEMORY_SIZED_ACCESS_LEN 35
 
 #define AVR32UC_FLASH_CTRL_BASE 0xFFFE1400
+#define AVR32UC_FLASH_MMAP_OFFSET 0x80000000
 
 #define FCR 0x00
 #define FCMD 0x04
@@ -386,6 +388,8 @@ int avr32uc_flash_clear_page_buf(struct flash_bank *bank)
 	int err;
 	ERR_CHECK(avr32uc_send_flash_command(bank, command));
 	avr32uc_wait_flash_ready(bank);
+
+	return ERROR_OK;
 }
 
 int avr32uc_flash_get_size(struct flash_bank *bank, uint32_t* size)
@@ -393,37 +397,37 @@ int avr32uc_flash_get_size(struct flash_bank *bank, uint32_t* size)
 	uint32_t fsrReg;
 	ERR_CHECK(avr32uc_read_flash_controller_reg(bank, FSR, &fsrReg));
 	unsigned int fsz = (fsrReg & FSR_FSZ_MASK) >> FSR_FSZ_offset;
-	unsigned int size = 0;
 	switch (fsz)
 	{
 	case 0:
-		size = 32 * 1024;
+		*size = 32 * 1024;
 		break;
 	case 1:
-		size = 64 * 1024;
+		*size = 64 * 1024;
 		break;
 	case 2:
-		size = 128 * 1024;
+		*size = 128 * 1024;
 		break;
 	case 3:
-		size = 256 * 1024;
+		*size = 256 * 1024;
 		break;
 	case 4:
-		size = 384 * 1024;
+		*size = 384 * 1024;
 		break;
 	case 5:
-		size = 512 * 1024;
+		*size = 512 * 1024;
 		break;
 	case 6:
-		size = 768 * 1024;
+		*size = 768 * 1024;
 		break;
 	case 7:
-		size = 1024 * 1024;
+		*size = 1024 * 1024;
 		break;
 	default:
-		return -1;
+		return ERROR_FAIL;
 	}
-	return size;
+
+	return ERROR_OK;
 }
 
 int avr32uc_flash_unlock_region(struct flash_bank *bank, uint32_t offset, uint32_t size)
@@ -449,6 +453,8 @@ int avr32uc_flash_unlock_region(struct flash_bank *bank, uint32_t offset, uint32
 		offset = page;
 		pagenr = ((offset) / BYTES_PER_PAGE);
 	}
+
+	return ERROR_OK;
 }
 
 int avr32uc_flash_unlock(struct flash_bank *bank)
@@ -456,14 +462,26 @@ int avr32uc_flash_unlock(struct flash_bank *bank)
 	int DeviceSize;
 	ERR_CHECK(avr32uc_flash_get_size(bank, &DeviceSize));
 	ERR_CHECK(avr32uc_flash_unlock_region(bank, 0, DeviceSize));
+
+	return ERROR_OK;
 }
 
-int avr32uc_flash_erase(struct flash_bank *bank)
+int avr32uc_flash_erase(struct flash_bank *bank, unsigned int first,
+		unsigned int last)
 {
+	LOG_DEBUG("%s", __func__);
+
+	if (bank->target->state != TARGET_HALTED) {
+		LOG_ERROR("Target not halted");
+		return ERROR_TARGET_NOT_HALTED;
+	}
+
 	if (avr32uc_wait_flash_ready(bank) != 0) return ERROR_FAIL;
 	uint32_t Command = WRITE_PROTECT_KEY | CMD_ERASE_ALL;
 	ERR_CHECK(avr32uc_send_flash_command(bank, Command));
 	avr32uc_wait_flash_ready(bank);
+
+	return ERROR_OK;
 }
 
 int avr32uc_flash_erase_userpage(struct flash_bank *bank)
@@ -472,6 +490,8 @@ int avr32uc_flash_erase_userpage(struct flash_bank *bank)
 	if (avr32uc_wait_flash_ready(bank) != 0) return ERROR_FAIL;
 	ERR_CHECK(avr32uc_send_flash_command(bank, command)); // execute user page erase command
 	avr32uc_wait_flash_ready(bank);
+
+	return ERROR_OK;
 }
 
 int avr32uc_flash_erase_region(struct flash_bank *bank, uint32_t offset, uint32_t size)
@@ -493,98 +513,150 @@ int avr32uc_flash_erase_region(struct flash_bank *bank, uint32_t offset, uint32_
 		offset = page;
 		pagenr = (offset) / BYTES_PER_PAGE;
 	}
+
+	return ERROR_OK;
 }
 
-int ProgramUserPage(offset - USER_PAGE_OFFSET, DataBuffer)
+int avr32uc_flash_program_userpage(struct flash_bank *bank, uint32_t offset, uint8_t* DataBuffer, uint32_t len)
 {
-	if (offset >= BYTES_PER_PAGE || offset + Length(DataBuffer) > BYTES_PER_PAGE)
-		return -1;
+	struct avr32_ap7k_common* avr = bank->target->arch_info;
+	if ((offset + len) > BYTES_PER_PAGE)
+		return ERROR_FLASH_DST_OUT_OF_BANK;
 	// Packet bufferPacket(BYTES_PER_PAGE) define a buffer packet
 	// to manipulate the data
 	// If the packet to be written is smaller than the user page we fill the
 	// remaining space with existing data
-	if (offset > 0 || Length(DataBuffer) < BYTES_PER_PAGE)
-		ReadMemory(mBaseAddress + USER_PAGE_OFFSET, bufferPacket, 0);
+	static uint8_t bufferPacket[BYTES_PER_PAGE];
+	if (offset > 0)
+	{
+		ERR_CHECK(avr32_jtag_read_memory8(&(avr->jtag), 
+			USER_PAGE_OFFSET + AVR32UC_FLASH_MMAP_OFFSET, offset, bufferPacket));
+	}
+	if (len < BYTES_PER_PAGE)
+	{
+		ERR_CHECK(avr32_jtag_read_memory8(&(avr->jtag), 
+			USER_PAGE_OFFSET + AVR32UC_FLASH_MMAP_OFFSET + len, BYTES_PER_PAGE - len, 
+			bufferPacket + len));
+	}
+	memcpy(bufferPacket + offset, DataBuffer, len);
 	// Must clear the page buffer before writing to it.
-	avr32uc_flash_clear_page_buf();
-	int bytesLeftInPacket = Length(DataBuffer);
-	int i = 0; // data packet index
-	// Fill buffer packet
-	while (bytesLeftInPacket > 0)
-	{
-		bufferPacket.writeSingleByte(offset++, ReadSingleByte(DataBuffer));
-		i++;
-		bytesLeftInPacket--;
-	}
+	ERR_CHECK(avr32uc_flash_clear_page_buf(bank));
 	// Write page buffer
-	WriteMemory(mBaseAddress + USER_PAGE_OFFSET, bufferPacket);
+	ERR_CHECK(avr32_jtag_write_memory8(&(avr->jtag), 
+		USER_PAGE_OFFSET + AVR32UC_FLASH_MMAP_OFFSET, BYTES_PER_PAGE, bufferPacket));
 	uint32_t command = WRITE_PROTECT_KEY | CMD_WRITE_USER_PAGE;
-	avr32uc_wait_flash_ready();
-	avr32uc_send_flash_command(command); // execute user page write command
-	avr32uc_wait_flash_ready();
-}
-int ProgramSequence(offset, DataBuffer)
-{
-	if (offset >= USER_PAGE_OFFSET && offset < USER_PAGE_OFFSET + BYTES_PER_PAGE)
-		ProgramUserPage(offset - USER_PAGE_OFFSET, DataBuffer);
+	if (avr32uc_wait_flash_ready(bank) != 0) return ERROR_FLASH_BUSY;
+	ERR_CHECK(avr32uc_send_flash_command(bank, command)); // execute user page write command
+	avr32uc_wait_flash_ready(bank);
 
-	if (offset >= mDeviceSize || offset + Length(DataBuffer) > mDeviceSize)
-		return -1;
-	// compute start offset of page to write to
-	uint32_t page = offset & ~(BYTES_PER_PAGE - 1);
-	unsigned int bytesLeft = (Length(DataBuffer));
-	int dataoffset = 0; // current offset in the data packet
-	Packet bufferPacket(BYTES_PER_PAGE);
-	// we write one page at a time
-	// Loop until all bytes in data has been written
-	while (bytesLeft > 0)
+	return ERROR_OK;
+}
+
+static int avr32uc_flash_send_write_page(struct flash_bank *bank, uint32_t page_number)
+{
+	uint32_t command = WRITE_PROTECT_KEY | CMD_WRITE_PAGE;
+	// include the correct page number in the command
+	command |= page_number << FCMD_PAGEN_offset;
+	ERR_CHECK(avr32uc_wait_flash_ready(bank));
+	ERR_CHECK(avr32uc_send_flash_command(bank, command)); // execute page write command
+	if (avr32uc_wait_flash_ready(bank) != 0)
+		return ERROR_FLASH_BUSY;
+
+	return ERROR_OK;
+}
+
+int avr32uc_flash_program(struct flash_bank *bank, uint32_t offset, uint8_t* DataBuffer, uint32_t len)
+{
+	if (offset >= USER_PAGE_OFFSET && (offset + len) <= USER_PAGE_OFFSET + BYTES_PER_PAGE)
+		return avr32uc_flash_program_userpage(bank, offset - USER_PAGE_OFFSET, DataBuffer, len);
+	
+	uint32_t mDeviceSize;
+	ERR_CHECK(avr32uc_flash_get_size(bank, &mDeviceSize));
+	if (offset >= mDeviceSize || (offset + len) > mDeviceSize)
+		return ERROR_FLASH_DST_OUT_OF_BANK;
+
+	static uint8_t bufferPacket[BYTES_PER_PAGE];
+
+	//Write first partial page (if exists)
+	uint32_t flash_offset = AVR32UC_FLASH_MMAP_OFFSET + (offset / BYTES_PER_PAGE) * BYTES_PER_PAGE;
+	uint32_t buffer_offset = 0;
+	uint32_t start_part_len = offset % BYTES_PER_PAGE;
+	if (start_part_len != 0)
 	{
-		bufferPacket.clear(0xff);
-		// Must clear the page buffer before writing to it.
-		avr32uc_flash_clear_page_buf();
-		/* Keeps track of how many bytes to write to the bufferPacket.
-		 * If the start offset is not aligned on a page boundary, we will not fill
-		 * the bufferPacket completely. This is also the case when the number of
-		 * bytes left to write is less than the size of a page. If the bufferPacket
-		 * is not filled completely we first read the current flash content into
-		 * the packet. This way we will always preserve existing flash data
-		 * adjacent to the new data we wish to write.
-		 */
-		int bytesLeftInPacket = min((page + BYTES_PER_PAGE - offset), bytesLeft);
-		int bufferoffset = offset % BYTES_PER_PAGE;
-		if (bufferoffset != 0 || bytesLeftInPacket != (BYTES_PER_PAGE))
-		{
-			ReadMemory(mBaseAddress + page, bufferPacket, 0);
-		}
-		for (int i = 0; i < bytesLeftInPacket; ++i)
-		{
-			bufferPacket.writeSingleByte(bufferoffset++,
-										 ReadSingleByte(DataBuffer));
-			offset++;
-			WriteMemory(mBaseAddress + page, bufferPacket);
-			int pagenr = ((offset) / BYTES_PER_PAGE)
-				uint32_t command = WRITE_PROTECT_KEY | CMD_WRITE_PAGE;
-			// include the correct page number in the command
-			command |= pagenr << FCMD_PAGEN_offset;
-			avr32uc_wait_flash_ready();
-			avr32uc_send_flash_command(command); // execute page write command
-			avr32uc_wait_flash_ready();
-			page += BYTES_PER_PAGE;
-			offset = page;
-			bytesLeft -= bytesLeftInPacket;
-		}
+		ERR_CHECK(avr32uc_flash_clear_page_buf(bank));
+		ERR_CHECK(avr32_jtag_read_memory8(bank, 
+			flash_offset,
+			start_part_len,
+			bufferPacket));
+		memcpy(bufferPacket + start_part_len,
+			DataBuffer,
+			BYTES_PER_PAGE - start_part_len);
+
+		ERR_CHECK(avr32_jtag_write_memory8(bank,
+			flash_offset,
+			BYTES_PER_PAGE,
+			bufferPacket));
+		ERR_CHECK(avr32uc_flash_send_write_page(bank, (flash_offset) / BYTES_PER_PAGE));
+
+		flash_offset += BYTES_PER_PAGE;
+		buffer_offset += BYTES_PER_PAGE - start_part_len;
 	}
+
+	//Write complete pages
+	uint32_t whole_page_limit = AVR32UC_FLASH_MMAP_OFFSET + ((offset + len) / BYTES_PER_PAGE) * BYTES_PER_PAGE;
+	while (flash_offset < whole_page_limit)
+	{
+		ERR_CHECK(avr32uc_flash_clear_page_buf(bank));
+		ERR_CHECK(avr32_jtag_write_memory8(bank,
+			flash_offset,
+			BYTES_PER_PAGE,
+			DataBuffer + buffer_offset));
+		ERR_CHECK(avr32uc_flash_send_write_page(bank, (flash_offset) / BYTES_PER_PAGE));
+
+		flash_offset += BYTES_PER_PAGE;
+		buffer_offset += BYTES_PER_PAGE;
+	}
+
+	//Write last partial page (if exists)
+	uint32_t end_part_len = (offset + len) % BYTES_PER_PAGE;
+	if (end_part_len != 0)
+	{
+		ERR_CHECK(avr32uc_flash_clear_page_buf(bank));
+		memcpy(bufferPacket,
+			DataBuffer + buffer_offset,
+			end_part_len);
+		ERR_CHECK(avr32_jtag_read_memory8(bank, 
+			flash_offset + end_part_len,
+			BYTES_PER_PAGE - end_part_len,
+			bufferPacket + end_part_len));
+
+		ERR_CHECK(avr32_jtag_write_memory8(bank,
+			flash_offset,
+			BYTES_PER_PAGE,
+			bufferPacket));
+		ERR_CHECK(avr32uc_flash_send_write_page(bank, (flash_offset) / BYTES_PER_PAGE));
+	}
+
+	return ERROR_OK;
 }
-bool GetGeneralPurposeFuseBit(int Index)
+
+int avr32uc_fuse_get_bit(struct flash_bank *bank, int Index, bool* value)
 {
-	if (Index > 31 || Index < 0)
-		return;
-	uint32_t fgpfrReg = avr32uc_read_flash_controller_reg(FGPFR);
-	return fgpfrReg & (1 << Index);
+	if (Index > 63 || Index < 0)
+		return ERROR_FLASH_DST_OUT_OF_BANK;
+
+	uint32_t fuses_high, fuses_low;
+	ERR_CHECK(avr32uc_read_flash_controller_reg(bank, FGPFRHI, &fuses_high));
+	ERR_CHECK(avr32uc_read_flash_controller_reg(bank, FGPFRLO, &fuses_low));
+	uint64_t fuses = (fuses_high << 32) | fuses_low;
+	*value = fuses & (1 << Index);
+
+	return ERROR_OK;
 }
-void SetGeneralPurposeFuseBit(int Index, bool Value)
+
+int avr32uc_fuse_set_bit(struct flash_bank *bank, int index, bool Value)
 {
-	if (Index > 31 || Index < 0)
+	if (index > 63 || index < 0)
 		return;
 	uint32_t command = WRITE_PROTECT_KEY | (index << FCMD_PAGEN_offset);
 	if (Value) // erase bit
@@ -592,19 +664,34 @@ void SetGeneralPurposeFuseBit(int Index, bool Value)
 	else
 		// program bit
 		command |= CMD_WRITE_GP_FUSE_BIT;
-	avr32uc_wait_flash_ready();
-	avr32uc_send_flash_command(command);
-	avr32uc_wait_flash_ready();
+	if (avr32uc_wait_flash_ready(bank) != 0) return ERROR_FLASH_BUSY;
+	ERR_CHECK(avr32uc_send_flash_command(bank, command));
+	avr32uc_wait_flash_ready(bank);
+
+	return ERROR_OK;
 }
 
-void SetGeneralPurposeFuseByte(int Index, unsigned char Value)
+int avr32uc_fuse_set_byte(struct flash_bank *bank, int Index, uint8_t Value)
 {
-	if (Index > 3 || Index < 0)
-		return;
+	if (Index > 7 || Index < 0)
+		return ERROR_FLASH_DST_OUT_OF_BANK;
 	uint32_t command = WRITE_PROTECT_KEY | CMD_PROGRAM_GP_FUSE_BYTE | Index << FCMD_PAGEN_offset | Value << (FCMD_PAGEN_offset + 2);
-	avr32uc_wait_flash_ready();
-	avr32uc_send_flash_command(command);
-	avr32uc_wait_flash_ready();
+	if (avr32uc_wait_flash_ready(bank) != 0) return ERROR_FLASH_BUSY;
+	ERR_CHECK(avr32uc_send_flash_command(bank, command));
+	avr32uc_wait_flash_ready(bank);
+
+	return ERROR_OK;
+}
+
+int avr32uc_flash_read(struct flash_bank *bank, uint8_t* buffer, uint32_t offset, uint32_t len)
+{
+	struct avr32_ap7k_common* avr = bank->target->arch_info;
+
+	uint32_t device_length;
+	ERR_CHECK(avr32uc_flash_get_size(bank, &device_length));
+	if ((offset + len) > device_length) return ERROR_FLASH_DST_OUT_OF_BANK;
+
+	return avr32_jtag_read_memory8(&(avr->jtag), offset + AVR32UC_FLASH_MMAP_OFFSET, len, buffer);
 }
 
 static const struct command_registration avrf_exec_command_handlers[] = {
@@ -627,12 +714,12 @@ static const struct command_registration avrf_command_handlers[] = {
 	COMMAND_REGISTRATION_DONE};
 
 const struct flash_driver avr32uc_flash = {
-	.name = "avr",
+	.name = "avr32_uc3",
 	.commands = avrf_command_handlers,
 	.flash_bank_command = avr32uc_flash_bank_command,
-	.erase = avrf_erase,
-	.write = avrf_write,
-	.read = default_flash_read,
+	.erase = avr32uc_flash_erase,
+	.write = avr32uc_flash_program,
+	.read = avr32uc_flash_read,
 	.probe = avr32uc_flash_probe,
 	.auto_probe = avr32uc_flash_auto_probe,
 	.erase_check = default_flash_blank_check,
